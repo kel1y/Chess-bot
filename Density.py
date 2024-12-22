@@ -19,39 +19,110 @@ env.render(mode="ipython", width=1000, height=1000)
 from Chessnut import Game
 import random
 
+def fen_to_board_array(fen):
+    """Convert a FEN string to a flat list representing the chessboard."""
+    board = []
+    for row in fen.split()[0].split('/'):
+        for char in row:
+            if char.isdigit():
+                board.extend([" "] * int(char))
+            else:
+                board.append(char)
+    return board
+
+def quick_evaluate(board_fen):
+    """Lightweight board evaluation to score material advantage."""
+    values = {"P": 1, "N": 3, "B": 3, "R": 5, "Q": 9, "K": 100,
+              "p": -1, "n": -3, "b": -3, "r": -5, "q": -9, "k": -100}
+    board = fen_to_board_array(board_fen)
+    return sum(values.get(piece, 0) for piece in board)
+
+def king_trap_score(board_array, king_pos):
+    """Estimate king trapping potential by counting surrounding pieces."""
+    trapping_score = 0
+    x, y = divmod(king_pos, 8)
+    directions = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
+
+    for dx, dy in directions:
+        nx, ny = x + dx, y + dy
+        if 0 <= nx < 8 and 0 <= ny < 8:
+            pos = nx * 8 + ny
+            if board_array[pos] in "PNBRQK":
+                trapping_score += 1
+
+    return trapping_score
+
+def prioritize_moves(moves, obs_board, opponent_king_pos):
+    """Categorize and prioritize moves based on strategy."""
+    checkmate_moves = []
+    capture_moves = []
+    king_trap_moves = []
+    strategic_moves = []
+
+    board_array = fen_to_board_array(obs_board)
+
+    for move in moves:
+        # Apply move
+        board = Game(obs_board)
+        board.apply_move(move)
+
+        # Checkmate detection
+        if board.status == Game.CHECKMATE:
+            checkmate_moves.append(move)
+            continue
+
+        # Capture moves
+        target_square = Game.xy2i(move[2:4])
+        if board_array[target_square] not in " ":
+            capture_moves.append(move)
+            continue
+
+        # King trapping moves
+        if opponent_king_pos is not None:
+            trap_score = king_trap_score(board_array, opponent_king_pos)
+            if trap_score > 0:
+                king_trap_moves.append((move, trap_score))
+                continue
+
+        # Strategic moves
+        score = quick_evaluate(board.get_fen())
+        strategic_moves.append((move, score))
+
+    return checkmate_moves, capture_moves, king_trap_moves, strategic_moves
+
 def chess_bot(obs):
-    """
-    Simple chess bot that prioritizes checkmates, then captures, queen promotions, then randomly moves.
-
-    Args:
-        obs: An object with a 'board' attribute representing the current board state as a FEN string.
-
-    Returns:
-        A string representing the chosen move in UCI notation (e.g., "e2e4")
-    """
-    # 0. Parse the current board state and generate legal moves using Chessnut library
+    """Optimized chess bot to reduce timeouts and maintain intelligence."""
     game = Game(obs.board)
     moves = list(game.get_moves())
+    if not moves:
+        return "0000"  # No legal moves
 
-    # 1. Check a subset of moves for checkmate
-    for move in moves[:50]:
-        g = Game(obs.board)
-        g.apply_move(move)
-        if g.status == Game.CHECKMATE:
-            return move
+    # Locate the opponent's king
+    opponent_king_pos = None
+    board_array = fen_to_board_array(obs.board)
+    for i, piece in enumerate(board_array):
+        if piece == 'k':  # Opponent's king
+            opponent_king_pos = i
+            break
 
-    # 2. Check for captures
-    for move in moves:
-        if game.board.get_piece(Game.xy2i(move[2:4])) != ' ':
-            return move
+    # Prioritize moves
+    checkmate_moves, capture_moves, king_trap_moves, strategic_moves = prioritize_moves(
+        moves, obs.board, opponent_king_pos
+    )
 
-    # 3. Check for queen promotions
-    for move in moves:
-        if "q" in move.lower():
-            return move
+    # Decide the best move
+    if checkmate_moves:
+        return random.choice(checkmate_moves)
+    if capture_moves:
+        return random.choice(capture_moves)
+    if king_trap_moves:
+        return max(king_trap_moves, key=lambda x: x[1])[0]
+    if strategic_moves:
+        return max(strategic_moves, key=lambda x: x[1])[0]
 
-    # 4. Random move if no checkmates or captures
+    # Default fallback
     return random.choice(moves)
+
 
 result = env.run(["main.py", "random"])
 print("Agent exit status/reward/time left: ")
